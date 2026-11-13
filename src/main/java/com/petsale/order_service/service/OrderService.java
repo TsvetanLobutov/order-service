@@ -32,13 +32,16 @@ public class OrderService {
         // 2. Save to Database
         orderRepository.save(order);
 
-        // 3. Send Event to Kafka
-        // The message will be exactly this string: "PRODUCT_ID:QUANTITY"
-        String kafkaMessage = order.getProductId() + ":" + order.getQuantity();
+        // 1. Create a JSON string for the event
+        String kafkaMessage = String.format(
+                "{\"orderId\": %d, \"productId\": %d, \"quantity\": %d, \"status\": \"PLACED\"}",
+                order.getId(), order.getProductId(), order.getQuantity()
+        );
+
         log.info("Sending message to Kafka: {}", kafkaMessage);
 
-        // We send the message to a topic called "order-topic"
-        kafkaTemplate.send("order-topic", kafkaMessage);
+        // 2. Send to the new topic
+        kafkaTemplate.send("order-events", kafkaMessage);
 
         return "Order placed successfully with ID: " + order.getId();
     }
