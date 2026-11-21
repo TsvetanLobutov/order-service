@@ -1,6 +1,5 @@
 package com.petsale.order_service.service;
 
-
 import com.petsale.order_service.dto.OrderRequest;
 import com.petsale.order_service.entity.Order;
 import com.petsale.order_service.repository.OrderRepository;
@@ -20,29 +19,53 @@ public class OrderService {
     private final KafkaTemplate<String, String> kafkaTemplate;
 
     public String placeOrder(OrderRequest orderRequest) {
-        // 1. Create the Order object
-        Order order = new Order();
-        order.setProductId(orderRequest.getProductId());
-        order.setQuantity(orderRequest.getQuantity());
-        // In a real app, total price is calculated on the backend, but we do it here for simplicity
-        order.setTotalPrice(orderRequest.getPrice().multiply(new java.math.BigDecimal(orderRequest.getQuantity())));
-        order.setOrderDate(LocalDateTime.now());
-        order.setStatus("PENDING");
+        log.info("📥 Processing new order request for Product ID: {} (Qty: {})",
+                orderRequest.getProductId(), orderRequest.getQuantity());
 
-        // 2. Save to Database
-        orderRepository.save(order);
+        try {
+            // 1. Create the Order object
+            Order order = new Order();
+            order.setProductId(orderRequest.getProductId());
+            order.setQuantity(orderRequest.getQuantity());
 
-        // 1. Create a JSON string for the event
-        String kafkaMessage = String.format(
-                "{\"orderId\": %d, \"productId\": %d, \"quantity\": %d, \"status\": \"PLACED\"}",
-                order.getId(), order.getProductId(), order.getQuantity()
-        );
+            // Calculate total price
+            java.math.BigDecimal totalPrice = orderRequest.getPrice()
+                    .multiply(new java.math.BigDecimal(orderRequest.getQuantity()));
+            order.setTotalPrice(totalPrice);
+            order.setOrderDate(LocalDateTime.now());
+            order.setStatus("PENDING");
 
-        log.info("Sending message to Kafka: {}", kafkaMessage);
+            // 2. Save to Database
+            Order savedOrder = orderRepository.save(order);
+            log.info("💾 Order #{} saved to database successfully. Total: ${}",
+                    savedOrder.getId(), savedOrder.getTotalPrice());
 
-        // 2. Send to the new topic
-        kafkaTemplate.send("order-events", kafkaMessage);
+            // 3. Create a JSON string for the Kafka event
+            // Added totalPrice and productId so the email can show the amount
+            String kafkaMessage = String.format(
+                    "{\"orderId\": %d, \"productId\": %d, \"quantity\": %d, \"totalPrice\": %.2f, \"status\": \"PLACED\"}",
+                    savedOrder.getId(),
+                    savedOrder.getProductId(),
+                    savedOrder.getQuantity(),
+                    savedOrder.getTotalPrice()
+            );
 
-        return "Order placed successfully with ID: " + order.getId();
+            // 4. Send to Kafka
+            try {
+                kafkaTemplate.send("order-events", kafkaMessage);
+                log.info("🚀 Event published to Kafka topic 'order-events' for Order #{}", savedOrder.getId());
+            } catch (Exception e) {
+                // If Kafka fails, the order is saved in the DB, but no email will be sent.
+                log.error("⚠️ Failed to send Kafka event for Order #{}. The order was saved, but the event was lost.",
+                        savedOrder.getId(), e);
+            }
+
+            return "Order placed successfully with ID: " + savedOrder.getId();
+
+        } catch (Exception e) {
+            log.error("❌ Critical failure while processing order for Product ID: {}",
+                    orderRequest.getProductId(), e);
+            throw new RuntimeException("Failed to place order due to internal error.");
+        }
     }
 }
